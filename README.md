@@ -1,79 +1,64 @@
-# SimuNation — Emergent AI Civilization Simulator
+# SimuNation V2 — Advanced Emergent AI Civilization Simulator
 
-SimuNation is a multi-agent simulation system mimicking a small autonomous civilization. Agents behave with human-like economic goals, interacting dynamically in a virtual world where economic indicators (like prices, supply shortages, and wealth inequality) emerge organically rather than from hardcoded outcomes.
-
----
-
-## 🧠 Core Architecture
-
-The simulation is split into modular components:
-
-1. **Agent System (`simunation/agent.py`)**
-   Autonomous agents with:
-   - **Unique Roles**:
-     - *Farmers*: Produce food, require money.
-     - *Laborers*: Earn wages working in external systems, require food to survive.
-     - *Merchants*: Mediate trades by buying food low and selling it high.
-   - **Personalities**:
-     - *Cooperative*: Sets fair/average prices, helps stabilize the market.
-     - *Selfish*: Aggressively seeks profit, marks up prices when demand is high.
-     - *Risk-Taking*: Prices food with higher volatility, willing to take risks.
-   - **Dynamic Memory**: Tracks moving averages of successful and failed transaction prices to adapt prices over time.
-
-2. **Economic Engine (`simunation/economy.py`)**
-   Uses a **Double-Auction Matching System**. Agents submit limit orders (Bids to buy and Asks to sell). The economy matches orders:
-   - Highest bids match with lowest asks.
-   - The transaction price is set to the midpoint of the bid and ask price.
-   - Prices fluctuate organically based on the supply of food and cash reserves.
-
-3. **World Engine & Government Policy (`simunation/world.py`)**
-   Updates parameters per timestep:
-   - **Taxation**: Collects a dynamic tax rate (default 5%) of each living agent's cash.
-   - **Welfare Redistribution**: Fully redistributes collected taxes to poor/starving agents, enabling them to purchase food and survive shortages.
-   - **Analytics**: Calculates total food, money, role counts, and the **Gini Inequality Coefficient**.
-
-4. **Web UI & Server (`simunation/app.py`, `simunation/templates/index.html`)**
-   FastAPI web server serving a dark-themed, glassmorphic visual dashboard displaying:
-   - Real-time Chart.js graphs tracking Gini coefficient, food prices, and supply levels.
-   - A live grid of all agents showing role icons, food, money, status, and interactive tooltips showing their current choices.
-   - Live system events and transaction history.
+SimuNation V2 is a multi-agent simulation modeling an emergent autonomous society on a 100x100 tile-based geographic grid. All behaviors (economic trades, social trust, marriages, childbirths, and crime) emerge naturally from agent attributes and local conditions without hardcoded outcomes.
 
 ---
 
-## 🚀 Getting Started
+## 🧬 Core Architectures
 
-### 📋 Prerequisites
-Make sure Python (3.8+) is installed. Install package dependencies:
+### 1. Geographic Map Grid (`backend/app/simunation/world.py`)
+- **100x100 Tile Matrix** with types: `Farm`, `Forest`, `River`, `Village`, `Town`, `Mine`, and `Mountain`.
+- Tile positions influence production efficiency and travel destinations.
+
+### 2. Advanced AI Agent Mind (`backend/app/simunation/agent.py`)
+- **Traits**: `greed`, `cooperation`, `riskTolerance`, `intelligence`, `ambition`.
+- **States**: Age, Money, Food, Health, Energy, Happiness, Housing Level.
+- **Professions**:
+  - *Farmers*: harvest food.
+  - *Miners*: extract raw materials.
+  - *Builders*: upgrade housing levels.
+  - *Doctors*: heal injured/unwell agents.
+  - *Teachers*: elevate community intelligence.
+  - *Workers*: support general labor.
+  - *Traders/Merchants*: arbitrate resources between villages and towns.
+- **Emergent Crime**: Under extreme hunger or poverty, greedy agents may rob nearby neighbors, resulting in severe trust damage.
+
+### 3. Social Engine & Lifecycles (`backend/app/simunation/relationships.py` & `families.py`)
+- **Social Trust**: Trust modifies based on deals, gifts, or betrayals. Agents select trading partners based on high trust.
+- **Demographics**: Adults with savings form partnerships, marry, and birth children. Children grow up and roll random adult professions.
+
+### 4. Dynamic Government Entity (`backend/app/simunation/government.py`)
+- Taxes money reserves and redistributes welfare to citizens facing starvation.
+- Adaptively adjusts policy: lowers tax rates and raises welfare payouts during starvation spikes.
+
+---
+
+## 🚀 Quick Start Instructions
+
+To start SimuNation V2:
+
+### 1. Launch Backend API
+In your terminal, navigate to the `backend/` folder and run the server script:
 ```bash
+cd backend
 pip install -r requirements.txt
-```
-
-### 💻 Run Options
-
-#### Option A: Web Server & Interactive Dashboard (Recommended)
-Launch the FastAPI development server:
-```bash
 python run.py
 ```
-Open your browser and navigate to **`http://127.0.0.1:8000`** to access the dashboard.
+*FastAPI server runs on **`http://127.0.0.1:8000`***
 
-#### Option B: Terminal CLI Mode
-To run a quick simulation run directly in the command prompt:
+### 2. Launch Frontend Dev Server
+Open a second terminal, navigate to the `frontend/` folder, and launch the Vite client:
 ```bash
-python run.py --cli --steps 50
+cd frontend
+npm install
+npm run dev
 ```
+*Vite dev server opens on **`http://127.0.0.1:5173`*** (or browse to local link shown).
 
 ---
 
-## 📊 Running Tests
-Run the test suite to verify the code logic:
+## 🧪 Unit Tests
+Run backend test coverage:
 ```bash
-python -m pytest tests/
+python -m pytest backend/tests/
 ```
-
----
-
-## 🎭 Emergent Properties to Observe
-- **Wealth Concentration**: If taxes and welfare are set to 0%, the Gini coefficient steadily rises as merchants and lucky farmers capture a large share of the money supply.
-- **Shortage Panic**: If food supply drops, starving Laborers panic, bidding extremely high prices to secure food.
-- **Welfare Stabilization**: Applying a 5-10% tax rate acts as an automatic stabilizer, preventing wealth concentration and reducing starvation-related deaths.
