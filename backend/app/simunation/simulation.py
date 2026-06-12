@@ -131,8 +131,44 @@ class AdvancedSimulation:
         # 7. Demographics (Marriages & Childbirth)
         self._process_demographics(step_logs)
 
-        # 8. Record History Stats
+        # 8. Starvation memory alerts
+        for aid, agent in self.agents.items():
+            if agent.is_alive and agent.starvation_ticks == 1:
+                self._record_memory(agent.id, agent.name, "I am starving because I have no food left! I must acquire food quickly.", 7)
+
+        # 9. Record History Stats
         stats = self._compile_stats()
+
+        # 10. LangGraph Government Council integration
+        if self.step_count % 10 == 0:
+            try:
+                from simunation.agent_mind import run_government_council
+                council_res = run_government_council({"stats": stats, "government": self.government.to_dict()}, step_logs)
+                if council_res["policy"]:
+                    p = council_res["policy"]
+                    if "tax_rate" in p:
+                        self.government.tax_rate = p["tax_rate"]
+                    if "welfare_amount" in p:
+                        self.government.welfare_amount = p["welfare_amount"]
+                    step_logs.append(f"🏛️ Council: Adjusted policy - Tax: {self.government.tax_rate*100:.1f}%, Welfare: ${self.government.welfare_amount:.1f}. Analysis: {council_res['analysis']}")
+                
+                if council_res["event"]:
+                    from simunation.events import WorldEvent
+                    evt_name = council_res["event"]
+                    events_config = {
+                        "Drought": {"duration": 8, "description": "Council detected starvation crisis. Severe Drought initiated.", "modifiers": {"food_production": 0.4, "happiness": 0.85}},
+                        "Economic Boom": {"duration": 10, "description": "Council detected low inequality. Initiated economic stimulus.", "modifiers": {"wage_multiplier": 1.5, "happiness": 1.25}}
+                    }
+                    if evt_name in events_config:
+                        cfg = events_config[evt_name]
+                        evt = WorldEvent(evt_name, cfg["duration"], cfg["description"], cfg["modifiers"])
+                        self.events.active_events.append(evt)
+                        step_logs.append(f"📢 Council Event: {evt_name} has been triggered by the Council!")
+                # Compile stats again to capture policy update
+                stats = self._compile_stats()
+            except Exception as e:
+                print(f"Error executing council agent: {e}")
+
         self.history.append(stats)
         if len(self.history) > 200:
             self.history.pop(0)
@@ -146,6 +182,15 @@ class AdvancedSimulation:
             "logs": step_logs,
             "trades": matched_trades
         }
+
+    def _record_memory(self, agent_id: int, agent_name: str, text: str, importance: int):
+        try:
+            from simunation.database import add_agent_memory
+            from simunation.agent_mind import get_embedding
+            emb = get_embedding(text)
+            add_agent_memory(agent_id, agent_name, self.step_count, text, importance, emb)
+        except Exception as e:
+            print(f"Error recording memory: {e}")
 
     def _execute_theft(self, thief: AdvancedAgent, step_logs: List[str]):
         """Executes a theft from a random wealthy neighbor on the same or adjacent tile."""
@@ -174,6 +219,10 @@ class AdvancedSimulation:
             # Betrayal destroys trust
             victim.relationships.modify_trust(thief.id, -60.0, f"Stole ${stolen_money} from me!", self.step_count)
             step_logs.append(f"⚠️ Crime: {thief.name} (#{thief.id}) robbed {victim.name} (#{victim.id}), stealing ${stolen_money:.1f} and {stolen_food:.1f} food.")
+            
+            # Record memories
+            self._record_memory(thief.id, thief.name, f"I was starving and had to rob my neighbor {victim.name}, stealing ${stolen_money} and {stolen_food} food.", 8)
+            self._record_memory(victim.id, victim.name, f"I was robbed by {thief.name}! They stole ${stolen_money} and {stolen_food} food from me. I do not trust them anymore.", 9)
         else:
             thief.last_action = "Failed theft (no targets nearby)"
 
@@ -209,6 +258,10 @@ class AdvancedSimulation:
                     
                     marriages += 1
                     step_logs.append(f"❤️ Marriage: {a1.name} and {a2.name} formed a partnership and started a family.")
+                    
+                    # Record memories
+                    self._record_memory(a1.id, a1.name, f"I married my partner {a2.name} and we started our new family together.", 6)
+                    self._record_memory(a2.id, a2.name, f"I married my partner {a1.name} and we started our new family together.", 6)
                     break
             if marriages >= 2:
                 break
@@ -250,6 +303,10 @@ class AdvancedSimulation:
                             fam.add_member(child_id)
                             
                             step_logs.append(f"👶 Birth: A new child, {child.name}, was born to {a.name} and {partner.name}.")
+                            
+                            # Record memories
+                            self._record_memory(a.id, a.name, f"Our new child, {child.name}, was born! I am so happy to expand our family.", 8)
+                            self._record_memory(partner.id, partner.name, f"Our new child, {child.name}, was born! I am so happy to expand our family.", 8)
 
     def _compile_stats(self) -> Dict[str, Any]:
         living = [a for a in self.agents.values() if a.is_alive]

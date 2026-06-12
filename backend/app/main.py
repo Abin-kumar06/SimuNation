@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, List
+import asyncio
 
 from simunation.simulation import AdvancedSimulation
 
@@ -10,7 +11,7 @@ app = FastAPI(title="SimuNation V2 — Emergent AI Civilization Simulator")
 # Enable CORS for React dev server on port 5173
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"], # Support all dev and local addresses
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,6 +19,28 @@ app.add_middleware(
 
 # Global Simulation Instance
 sim = AdvancedSimulation()
+
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
 
 class PolicyUpdate(BaseModel):
     tax_rate: float
@@ -84,6 +107,25 @@ async def get_state():
         "government": sim.government.to_dict()
     }
 
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        # Send initial state immediately
+        initial_state = await get_state()
+        await websocket.send_json({"type": "state", "data": initial_state})
+        while True:
+            # Maintain connection, handle incoming client requests if any
+            data = await websocket.receive_text()
+            if data == "step":
+                await step_simulation(1)
+            elif data == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+
 @app.post("/api/step")
 async def step_simulation(count: int = Query(1, description="Number of steps to execute")):
     if count < 1:
@@ -93,6 +135,9 @@ async def step_simulation(count: int = Query(1, description="Number of steps to 
     for _ in range(count):
         last_res = sim.step()
         
+    state = await get_state()
+    await manager.broadcast({"type": "state", "data": state})
+    
     return {
         "success": True,
         "steps_run": count,
@@ -103,6 +148,8 @@ async def step_simulation(count: int = Query(1, description="Number of steps to 
 @app.post("/api/reset")
 async def reset_simulation():
     sim.reset()
+    state = await get_state()
+    await manager.broadcast({"type": "state", "data": state})
     return {"success": True, "message": "Civilization reset completed."}
 
 @app.post("/api/policy")
@@ -111,6 +158,8 @@ async def update_policy(policy: PolicyUpdate):
     sim.government.welfare_amount = policy.welfare_amount
     sim.government.welfare_money_threshold = policy.welfare_money_threshold
     sim.government.welfare_food_threshold = policy.welfare_food_threshold
+    state = await get_state()
+    await manager.broadcast({"type": "state", "data": state})
     return {"success": True, "message": "Government fiscal policies updated."}
 
 @app.post("/api/trigger-event")
@@ -155,3 +204,45 @@ async def trigger_event(name: str):
     sim.events.active_events.append(evt)
     sim.logs.append(f"📢 Event Alert: {name} has been manually started by Government! {cfg['description']}")
     return {"success": True, "message": f"Event '{name}' started."}
+
+@app.get("/api/agent/{agent_id}/monologue")
+async def get_agent_monologue(agent_id: int):
+    """Retrieve or generate the agent's monologue and list of memories."""
+    agent = sim.agents.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    agent_data = {
+        "id": agent.id,
+        "name": agent.name,
+        "role": agent.role,
+        "age": agent.age,
+        "money": round(agent.money, 2),
+        "food": round(agent.food, 2),
+        "health": round(agent.health, 1),
+        "energy": round(agent.energy, 1),
+        "happiness": round(agent.happiness, 1),
+        "housing": agent.housing_level,
+        "x": agent.x,
+        "y": agent.y,
+        "is_alive": agent.is_alive,
+        "starving": agent.starvation_ticks > 0,
+        "last_action": agent.last_action,
+        "greed": agent.greed,
+        "cooperation": agent.cooperation,
+        "riskTolerance": agent.risk_tolerance,
+        "intelligence": agent.intelligence,
+        "ambition": agent.ambition
+    }
+    
+    from simunation.agent_mind import generate_agent_inner_monologue
+    from simunation.database import get_agent_memories
+    
+    monologue = generate_agent_inner_monologue(agent_data)
+    memories = get_agent_memories(agent_id)
+    memory_logs = [f"Step {m['timestep']}: {m['memory_text']} (Importance: {m['importance']}/10)" for m in memories[:15]]
+    
+    return {
+        "monologue": monologue,
+        "memories": memory_logs
+    }
