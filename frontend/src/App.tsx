@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { MapCanvas } from "./components/MapCanvas";
+import { MapCanvas3D } from "./components/MapCanvas3D";
 import { StatsDashboard } from "./components/StatsDashboard";
 import { ControlPanel } from "./components/ControlPanel";
 
@@ -33,6 +34,7 @@ function App() {
   const [government, setGovernment] = useState<any>({});
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
   const [isAutoplay, setIsAutoplay] = useState<boolean>(false);
+  const [viewMode, setViewMode] = useState<"2D" | "3D">("3D");
 
   useEffect(() => {
     // 1. Fetch map static layout once
@@ -65,7 +67,7 @@ function App() {
         setLogs(data.logs);
         setStats(data.stats);
         setGovernment(data.government);
-        
+
         // Sync selected agent
         if (selectedAgent) {
           const updated = data.agents.find((a: AgentData) => a.id === selectedAgent.id);
@@ -232,12 +234,54 @@ function App() {
         <div className="lg:col-span-3 flex flex-col gap-6">
           {/* Tile Grid map */}
           {grid.length > 0 && (
-            <MapCanvas
-              grid={grid}
-              agents={agents}
-              selectedAgentId={selectedAgent?.id || null}
-              onSelectAgent={setSelectedAgent}
-            />
+            <div className="flex flex-col gap-4">
+              <div className="flex justify-between items-center bg-slate-900 border border-slate-800/80 px-5 py-3 rounded-xl shadow-xl">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-200 font-semibold text-sm tracking-wide">🌍 World Map Visualization</span>
+                  <span className="text-[10px] bg-indigo-950 text-indigo-400 border border-indigo-900/60 px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                    {viewMode} Mode Active
+                  </span>
+                </div>
+                <div className="bg-slate-950 p-0.5 rounded-lg border border-slate-800 flex gap-1 text-xs">
+                  <button
+                    onClick={() => setViewMode("2D")}
+                    className={`px-3.5 py-1.5 rounded-md transition-all font-semibold cursor-pointer ${
+                      viewMode === "2D"
+                        ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    2D Grid
+                  </button>
+                  <button
+                    onClick={() => setViewMode("3D")}
+                    className={`px-3.5 py-1.5 rounded-md transition-all font-semibold cursor-pointer ${
+                      viewMode === "3D"
+                        ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    3D Town
+                  </button>
+                </div>
+              </div>
+
+              {viewMode === "2D" ? (
+                <MapCanvas
+                  grid={grid}
+                  agents={agents}
+                  selectedAgentId={selectedAgent?.id || null}
+                  onSelectAgent={setSelectedAgent}
+                />
+              ) : (
+                <MapCanvas3D
+                  grid={grid}
+                  agents={agents}
+                  selectedAgentId={selectedAgent?.id || null}
+                  onSelectAgent={setSelectedAgent}
+                />
+              )}
+            </div>
           )}
 
           {/* Stats Graphs charts */}
