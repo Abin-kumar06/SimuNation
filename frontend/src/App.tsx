@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { MapCanvas } from "./components/MapCanvas";
 import { StatsDashboard } from "./components/StatsDashboard";
 import { ControlPanel } from "./components/ControlPanel";
@@ -33,6 +33,27 @@ function App() {
   const [government, setGovernment] = useState<any>({});
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
   const [isAutoplay, setIsAutoplay] = useState<boolean>(false);
+  const selectedAgentRef = useRef<AgentData | null>(null);
+  const [selectedAgentMonologue, setSelectedAgentMonologue] = useState<string>("");
+  const [selectedAgentMemories, setSelectedAgentMemories] = useState<string[]>([]);
+
+  useEffect(() => {
+    selectedAgentRef.current = selectedAgent;
+    
+    // Fetch monologue and memories when selection changes
+    if (selectedAgent) {
+      fetch(`${BACKEND_URL}/api/agent/${selectedAgent.id}/monologue`)
+        .then((res) => res.json())
+        .then((data) => {
+          setSelectedAgentMonologue(data.monologue);
+          setSelectedAgentMemories(data.memories);
+        })
+        .catch((err) => console.error("Error fetching agent monologue/memories:", err));
+    } else {
+      setSelectedAgentMonologue("");
+      setSelectedAgentMemories([]);
+    }
+  }, [selectedAgent?.id]);
 
   useEffect(() => {
     // 1. Fetch map static layout once
@@ -43,9 +64,61 @@ function App() {
 
     // 2. Fetch initial state
     fetchState();
+
+    // 3. Establish WebSocket connection
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+
+    const connectWS = () => {
+      const wsUrl = `ws://127.0.0.1:8000/api/ws`;
+      console.log("Connecting to WebSocket:", wsUrl);
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "state") {
+            const data = msg.data;
+            setAgents(data.agents);
+            setHistory(data.history);
+            setLogs(data.logs);
+            setStats(data.stats);
+            setGovernment(data.government);
+            
+            // Sync selected agent
+            if (selectedAgentRef.current) {
+              const updated = data.agents.find((a: AgentData) => a.id === selectedAgentRef.current!.id);
+              setSelectedAgent(updated || null);
+            }
+          }
+        } catch (err) {
+          console.error("Error parsing WS message:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        console.warn("WebSocket disconnected. Retrying in 3 seconds...");
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket error, closing:", err);
+        ws?.close();
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      if (ws) {
+        ws.onclose = null; // Prevent reconnect loop
+        ws.close();
+      }
+      clearTimeout(reconnectTimeout);
+    };
   }, []);
 
-  // Poll state if autoplay is on
+  // Poll step if autoplay is on (triggers backend, which broadcasts updates)
   useEffect(() => {
     let interval: any = null;
     if (isAutoplay) {
@@ -67,8 +140,8 @@ function App() {
         setGovernment(data.government);
         
         // Sync selected agent
-        if (selectedAgent) {
-          const updated = data.agents.find((a: AgentData) => a.id === selectedAgent.id);
+        if (selectedAgentRef.current) {
+          const updated = data.agents.find((a: AgentData) => a.id === selectedAgentRef.current!.id);
           setSelectedAgent(updated || null);
         }
       })
@@ -77,7 +150,6 @@ function App() {
 
   const handleStep = (count: number) => {
     fetch(`${BACKEND_URL}/api/step?count=${count}`, { method: "POST" })
-      .then(() => fetchState())
       .catch((err) => console.error("Error stepping:", err));
   };
 
@@ -87,7 +159,6 @@ function App() {
         .then(() => {
           setSelectedAgent(null);
           setIsAutoplay(false);
-          fetchState();
         })
         .catch((err) => console.error("Error resetting:", err));
     }
@@ -99,7 +170,6 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updatedPolicy)
     })
-      .then(() => fetchState())
       .catch((err) => console.error("Error applying policy:", err));
   };
 
@@ -223,6 +293,26 @@ function App() {
                   <span className="text-slate-500 block">Last Intention</span>
                   <span className="italic text-slate-300 font-medium">"{selectedAgent.last_action}"</span>
                 </div>
+
+                {/* Monologue */}
+                {selectedAgentMonologue && (
+                  <div className="col-span-2 bg-indigo-955/25 border border-indigo-500/20 p-3 rounded-lg text-xs leading-relaxed text-indigo-200">
+                    <span className="text-indigo-400 font-bold block text-[10px] uppercase tracking-wider mb-1">Inner Monologue</span>
+                    "{selectedAgentMonologue}"
+                  </div>
+                )}
+
+                {/* Memories */}
+                {selectedAgentMemories.length > 0 && (
+                  <div className="col-span-2 bg-slate-955 p-3 rounded-lg border border-slate-800 flex flex-col gap-1.5 max-h-48 overflow-y-auto scrollbar-thin">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase tracking-wider block border-b border-slate-800 pb-1 mb-1">Historical Memories</span>
+                    {selectedAgentMemories.map((m, idx) => (
+                      <div key={idx} className="text-[11px] text-slate-300 leading-tight">
+                        • {m}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
