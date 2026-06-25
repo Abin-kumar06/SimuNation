@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { MapCanvas } from "./components/MapCanvas";
 import { MapCanvas3D } from "./components/MapCanvas3D";
+import { MapCanvasIsometric } from "./components/MapCanvasIsometric";
 import { StatsDashboard } from "./components/StatsDashboard";
 import { ControlPanel } from "./components/ControlPanel";
+import { AgentDirectory } from "./components/AgentDirectory";
+import { Leaderboard } from "./components/Leaderboard";
 
 interface AgentData {
   id: number;
@@ -34,7 +37,9 @@ function App() {
   const [government, setGovernment] = useState<any>({});
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
   const [isAutoplay, setIsAutoplay] = useState<boolean>(false);
-  const [viewMode, setViewMode] = useState<"2D" | "3D">("3D");
+  const [viewMode, setViewMode] = useState<"2D" | "3D" | "isometric">("isometric");
+  const [worldRenderData, setWorldRenderData] = useState<any>(null);
+  const [leftPanelTab, setLeftPanelTab] = useState<"directory" | "leaderboard">("directory");
   const selectedAgentRef = useRef<AgentData | null>(null);
   const [selectedAgentMonologue, setSelectedAgentMonologue] = useState<string>("");
   const [selectedAgentMemories, setSelectedAgentMemories] = useState<string[]>([]);
@@ -86,6 +91,9 @@ function App() {
             setLogs(data.logs);
             setStats(data.stats);
             setGovernment(data.government);
+            if (data.world && data.world.render) {
+              setWorldRenderData(data.world.render);
+            }
             
             // Sync selected agent
             if (selectedAgentRef.current) {
@@ -140,6 +148,9 @@ function App() {
         setLogs(data.logs);
         setStats(data.stats);
         setGovernment(data.government);
+        if (data.world && data.world.render) {
+          setWorldRenderData(data.world.render);
+        }
 
         // Sync selected agent
         if (selectedAgentRef.current) {
@@ -239,6 +250,46 @@ function App() {
             />
           )}
 
+          {/* Tabbed Info Panel */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+            <div className="flex border-b border-slate-800">
+              <button
+                onClick={() => setLeftPanelTab("directory")}
+                className={`flex-1 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                  leftPanelTab === "directory"
+                    ? "bg-indigo-600/10 text-indigo-400 border-b-2 border-indigo-500"
+                    : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/30"
+                }`}
+              >
+                Directory
+              </button>
+              <button
+                onClick={() => setLeftPanelTab("leaderboard")}
+                className={`flex-1 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                  leftPanelTab === "leaderboard"
+                    ? "bg-indigo-600/10 text-indigo-400 border-b-2 border-indigo-500"
+                    : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/30"
+                }`}
+              >
+                Leaderboard
+              </button>
+            </div>
+            <div className="p-1">
+              {leftPanelTab === "directory" ? (
+                <AgentDirectory
+                  agents={agents}
+                  selectedAgentId={selectedAgent?.id || null}
+                  onSelectAgent={setSelectedAgent}
+                />
+              ) : (
+                <Leaderboard
+                  agents={agents}
+                  onSelectAgent={(agent) => setSelectedAgent(agent)}
+                />
+              )}
+            </div>
+          </div>
+
           {/* Selected Agent Inspector */}
           {selectedAgent && (
             <div className="bg-slate-900 border border-indigo-500/25 rounded-xl p-5 shadow-2xl relative overflow-hidden">
@@ -298,7 +349,7 @@ function App() {
 
                 {/* Monologue */}
                 {selectedAgentMonologue && (
-                  <div className="col-span-2 bg-indigo-955/25 border border-indigo-500/20 p-3 rounded-lg text-xs leading-relaxed text-indigo-200">
+                  <div className="col-span-2 bg-indigo-950/25 border border-indigo-500/20 p-3 rounded-lg text-xs leading-relaxed text-indigo-200">
                     <span className="text-indigo-400 font-bold block text-[10px] uppercase tracking-wider mb-1">Inner Monologue</span>
                     "{selectedAgentMonologue}"
                   </div>
@@ -306,7 +357,7 @@ function App() {
 
                 {/* Memories */}
                 {selectedAgentMemories.length > 0 && (
-                  <div className="col-span-2 bg-slate-955 p-3 rounded-lg border border-slate-800 flex flex-col gap-1.5 max-h-48 overflow-y-auto scrollbar-thin">
+                  <div className="col-span-2 bg-slate-900/50 p-3 rounded-lg border border-slate-800 flex flex-col gap-1.5 max-h-48 overflow-y-auto scrollbar-thin">
                     <span className="text-slate-400 font-bold text-[10px] uppercase tracking-wider block border-b border-slate-800 pb-1 mb-1">Historical Memories</span>
                     {selectedAgentMemories.map((m, idx) => (
                       <div key={idx} className="text-[11px] text-slate-300 leading-tight">
@@ -334,6 +385,16 @@ function App() {
                 </div>
                 <div className="bg-slate-950 p-0.5 rounded-lg border border-slate-800 flex gap-1 text-xs">
                   <button
+                    onClick={() => setViewMode("isometric")}
+                    className={`px-3.5 py-1.5 rounded-md transition-all font-semibold cursor-pointer ${
+                      viewMode === "isometric"
+                        ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Isometric Map
+                  </button>
+                  <button
                     onClick={() => setViewMode("2D")}
                     className={`px-3.5 py-1.5 rounded-md transition-all font-semibold cursor-pointer ${
                       viewMode === "2D"
@@ -341,7 +402,7 @@ function App() {
                         : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    2D Grid
+                    2D Orbit
                   </button>
                   <button
                     onClick={() => setViewMode("3D")}
@@ -356,7 +417,13 @@ function App() {
                 </div>
               </div>
 
-              {viewMode === "2D" ? (
+              {viewMode === "isometric" ? (
+                <MapCanvasIsometric
+                  worldData={worldRenderData}
+                  selectedAgentId={selectedAgent?.id || null}
+                  onSelectAgent={setSelectedAgent}
+                />
+              ) : viewMode === "2D" ? (
                 <MapCanvas
                   grid={grid}
                   agents={agents}
@@ -369,6 +436,7 @@ function App() {
                   agents={agents}
                   selectedAgentId={selectedAgent?.id || null}
                   onSelectAgent={setSelectedAgent}
+                  worldData={worldRenderData}
                 />
               )}
             </div>

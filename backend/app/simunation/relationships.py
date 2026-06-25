@@ -1,48 +1,43 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
-class MemoryEntry:
-    def __init__(self, description: str, trust_change: int, step: int):
-        self.description: str = description
-        self.trust_change: int = trust_change
-        self.step: int = step
+class Bond:
+    def __init__(self, agent_id_1: int, agent_id_2: int, strength: float, bond_type: str):
+        self.agent_id_1 = agent_id_1
+        self.agent_id_2 = agent_id_2
+        self.strength = strength
+        self.bond_type = bond_type
+        self.last_interaction_step = 0
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "description": self.description,
-            "trustChange": self.trust_change,
-            "step": self.step
-        }
+class SocialEngine:
+    def __init__(self, world: 'World'):
+        self.world = world
+        self.bonds: Dict[tuple, Bond] = {}
 
-class RelationshipManager:
-    def __init__(self):
-        # Maps target_agent_id -> trust score (clamped between -100 and 100)
-        self.trust_scores: Dict[int, float] = {}
-        # Maps target_agent_id -> list of MemoryEntry
-        self.memories: Dict[int, List[MemoryEntry]] = {}
+    def get_bond(self, id1: int, id2: int) -> Optional[Bond]:
+        key = (min(id1, id2), max(id1, id2))
+        return self.bonds.get(key)
 
-    def get_trust(self, agent_id: int) -> float:
-        return self.trust_scores.get(agent_id, 0.0)
+    def update_bond(self, id1: int, id2: int, strength: float, bond_type: str):
+        key = (min(id1, id2), max(id1, id2))
+        if key in self.bonds:
+            self.bonds[key].strength = max(-1.0, min(1.0, strength))
+            self.bonds[key].bond_type = bond_type
+            self.bonds[key].last_interaction_step = self.world.timestep
+        else:
+            self.bonds[key] = Bond(key[0], key[1], strength, bond_type)
+            self.bonds[key].last_interaction_step = self.world.timestep
 
-    def modify_trust(self, agent_id: int, change: float, description: str, step: int):
-        current = self.trust_scores.get(agent_id, 0.0)
-        new_trust = max(-100.0, min(100.0, current + change))
-        self.trust_scores[agent_id] = round(new_trust, 2)
+    def decay_bonds(self):
+        """Decay bonds over time if they haven't interacted recently"""
+        keys_to_remove = []
+        for key, bond in self.bonds.items():
+            if self.world.timestep - bond.last_interaction_step > 50:
+                bond.strength *= 0.95
+                if abs(bond.strength) < 0.05:
+                    keys_to_remove.append(key)
+        for key in keys_to_remove:
+            del self.bonds[key]
 
-        # Log memory of this interaction
-        if agent_id not in self.memories:
-            self.memories[agent_id] = []
-        
-        self.memories[agent_id].append(MemoryEntry(description, int(change), step))
-        if len(self.memories[agent_id]) > 10:
-            self.memories[agent_id].pop(0)
-
-    def get_memories_as_list(self) -> List[Dict[str, Any]]:
-        flat_memories = []
-        for agent_id, mems in self.memories.items():
-            for m in mems:
-                entry = m.to_dict()
-                entry["target_agent_id"] = agent_id
-                flat_memories.append(entry)
-        # Sort by step desc
-        flat_memories.sort(key=lambda x: x["step"], reverse=True)
-        return flat_memories[:20]  # Return last 20 memories total
+    def step(self) -> List[str]:
+        self.decay_bonds()
+        return []

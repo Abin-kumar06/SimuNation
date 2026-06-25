@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Query, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 
-from simunation.simulation import AdvancedSimulation
+from simunation.simulation import Simulation
+from simunation.visualization import WorldRenderer
 
 app = FastAPI(title="SimuNation V2 — Emergent AI Civilization Simulator")
 
@@ -18,7 +19,7 @@ app.add_middleware(
 )
 
 # Global Simulation Instance
-sim = AdvancedSimulation()
+sim = Simulation()
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -52,24 +53,30 @@ class PolicyUpdate(BaseModel):
 async def get_map():
     """Retrieve the static geographic map grid layout (100x100)."""
     grid_data = []
-    for y in range(sim.map.height):
+    for y in range(sim.world.height):
         row = []
-        for x in range(sim.map.width):
-            row.append(sim.map.get_tile(x, y).type)
+        for x in range(sim.world.width):
+            tile = sim.world.get_tile(x, y)
+            row.append(tile.tile_type.name if tile else "FARM")
         grid_data.append(row)
     return {
-        "width": sim.map.width,
-        "height": sim.map.height,
+        "width": sim.world.width,
+        "height": sim.world.height,
         "grid": grid_data
     }
 
 @app.get("/api/state")
-async def get_state():
+async def get_state(
+    min_x: Optional[int] = None,
+    min_y: Optional[int] = None,
+    max_x: Optional[int] = None,
+    max_y: Optional[int] = None
+):
     """Retrieve full civilization stats, logs, active events, and compressed agent coordinates."""
     living_agents = []
     dead_agents = []
     
-    for aid, agent in sim.agents.items():
+    for aid, agent in sim.world.agents.items():
         agent_data = {
             "id": agent.id,
             "name": agent.name,
@@ -97,14 +104,26 @@ async def get_state():
     if sim.history:
         latest_stats = sim.history[-1]
     else:
-        latest_stats = sim._compile_stats()
+        latest_stats = sim.world.get_stats()
+
+    viewport = None
+    if min_x is not None and min_y is not None and max_x is not None and max_y is not None:
+        viewport = (min_x, min_y, max_x, max_y)
+
+    renderer = WorldRenderer(sim.world)
+    render_data = renderer.to_json(viewport)
+    render_data["infrastructure"] = sim.infrastructure.to_3d_render()
 
     return {
         "stats": latest_stats,
         "history": sim.history,
         "agents": living_agents + dead_agents,
         "logs": sim.logs[-150:],  # Send last 150 items
-        "government": sim.government.to_dict()
+        "government": sim.government.to_dict(),
+        "world": {
+            **sim.world.to_dict(),
+            "render": render_data
+        }
     }
 
 @app.websocket("/api/ws")
@@ -154,10 +173,9 @@ async def reset_simulation():
 
 @app.post("/api/policy")
 async def update_policy(policy: PolicyUpdate):
-    sim.government.tax_rate = policy.tax_rate
-    sim.government.welfare_amount = policy.welfare_amount
-    sim.government.welfare_money_threshold = policy.welfare_money_threshold
-    sim.government.welfare_food_threshold = policy.welfare_food_threshold
+    sim.government.policy.tax_rate = policy.tax_rate
+    sim.government.policy.welfare_amount = policy.welfare_amount
+    sim.government.policy.welfare_threshold = policy.welfare_food_threshold
     state = await get_state()
     await manager.broadcast({"type": "state", "data": state})
     return {"success": True, "message": "Government fiscal policies updated."}
@@ -169,46 +187,23 @@ async def trigger_event(name: str):
     if name not in valid_events:
         raise HTTPException(status_code=400, detail=f"Invalid event. Must be one of {valid_events}")
         
-    # Get config properties
-    events_config = {
-        "Drought": {
-            "duration": 8,
-            "description": "Admin manually triggered a severe Drought. Crops will dry out.",
-            "modifiers": {"food_production": 0.4, "happiness": 0.85}
-        },
-        "Disease Outbreak": {
-            "duration": 6,
-            "description": "Admin manually released a pathogen. Health levels are falling.",
-            "modifiers": {"health_drain": 2.0, "happiness": 0.75}
-        },
-        "Economic Boom": {
-            "duration": 10,
-            "description": "Admin manual stimulus. Higher wages and employee satisfaction.",
-            "modifiers": {"wage_multiplier": 1.5, "happiness": 1.25}
-        },
-        "Resource Discovery": {
-            "duration": 5,
-            "description": "Admin manual resource spawn, doubling mining outputs.",
-            "modifiers": {"mine_production": 2.5}
-        },
-        "Market Crash": {
-            "duration": 7,
-            "description": "Admin manual stock-panic. Prices drop.",
-            "modifiers": {"price_deflation": 0.7, "happiness": 0.8}
-        }
+    scenario_mapping = {
+        "Drought": ("famine", {"intensity": 0.5}),
+        "Disease Outbreak": ("plague", {"mortality": 0.2}),
+        "Economic Boom": ("ubi", {"amount": 20}),
+        "Resource Discovery": ("gold_rush", {}),
+        "Market Crash": ("famine", {"intensity": 0.3})
     }
     
-    cfg = events_config[name]
-    from simunation.events import WorldEvent
-    evt = WorldEvent(name, cfg["duration"], cfg["description"], cfg["modifiers"])
-    sim.events.active_events.append(evt)
-    sim.logs.append(f"📢 Event Alert: {name} has been manually started by Government! {cfg['description']}")
+    stype, sparams = scenario_mapping[name]
+    logs = sim.apply_scenario(stype, sparams)
+    sim.logs.extend(logs)
     return {"success": True, "message": f"Event '{name}' started."}
 
 @app.get("/api/agent/{agent_id}/monologue")
 async def get_agent_monologue(agent_id: int):
     """Retrieve or generate the agent's monologue and list of memories."""
-    agent = sim.agents.get(agent_id)
+    agent = sim.world.agents.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
         

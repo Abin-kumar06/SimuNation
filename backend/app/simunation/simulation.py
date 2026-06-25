@@ -1,351 +1,266 @@
 import random
-from typing import Dict, List, Any, Tuple
-from simunation.config import config
-from simunation.world import MapGrid
-from simunation.agent import AdvancedAgent
-from simunation.economy import AdvancedEconomy, MarketOrder
-from simunation.government import Government
-from simunation.events import EventManager
-from simunation.families import FamilyRegistry
-from simunation.analytics import AnalyticsManager
+from typing import List, Dict, Optional
+from .world import World, TileType
+from .agent import Agent, Profession
+from .government import Government
+from .relationships import SocialEngine
+from .families import FamilySystem
+from .infrastructure import InfrastructureManager
 
-class AdvancedSimulation:
-    def __init__(self):
-        self.step_count: int = 0
-        self.map: MapGrid = MapGrid()
-        self.economy: AdvancedEconomy = AdvancedEconomy()
-        self.government: Government = Government()
-        self.events: EventManager = EventManager()
-        self.families: FamilyRegistry = FamilyRegistry()
-        self.agents: Dict[int, AdvancedAgent] = {}
-        self.logs: List[str] = []
+
+class Simulation:
+    def __init__(self, width: int = 100, height: int = 100, initial_population: int = 50, seed: Optional[int] = None):
+        self.world = World(width=width, height=height, seed=seed)
+        self.infrastructure = InfrastructureManager(self.world)
+        self.government = Government(self.world)
+        self.social_engine = SocialEngine(self.world)
+        self.family_system = FamilySystem(self.world)
+
+        self._initialize_population(initial_population)
+        self.paused = False
+        self.speed = 1.0
         self.history: List[Dict[str, Any]] = []
-        self.total_thefts: int = 0
-        self.next_agent_id: int = 1
-        
-        self._initialize_simulation()
+        self.logs: List[str] = []
 
-    def _initialize_simulation(self):
-        """Create initial agents and set up coordinates near relevant resources."""
-        roles = ["Farmer", "Miner", "Builder", "Doctor", "Teacher", "Worker", "Trader", "Merchant"]
-        weights = [0.25, 0.20, 0.15, 0.10, 0.10, 0.10, 0.05, 0.05]
-        
-        for _ in range(config.initial_population):
-            role = random.choices(roles, weights=weights)[0]
-            
-            # Place agent near matching tile
-            target_tile_type = "Town"
-            if role == "Farmer":
-                target_tile_type = "Farm"
-            elif role == "Miner":
-                target_tile_type = "Mine"
-            
-            # Find nearest tile or default random
-            rx, ry = random.randint(0, 99), random.randint(0, 99)
-            px, py = self.map.find_nearest_tile_type(rx, ry, target_tile_type)
-            
-            agent = AdvancedAgent(agent_id=self.next_agent_id, role=role, x=px, y=py)
-            self.agents[agent.id] = agent
-            self.next_agent_id += 1
+    def _initialize_population(self, count: int):
+        """Create initial agents scattered across the world"""
+        for _ in range(count):
+            attempts = 0
+            while attempts < 100:
+                x = random.randint(0, self.world.width - 1)
+                y = random.randint(0, self.world.height - 1)
+                tile = self.world.get_tile(x, y)
+                if tile and tile.tile_type in (TileType.VILLAGE, TileType.TOWN, TileType.FARM):
+                    break
+                attempts += 1
 
-    def step(self) -> Dict[str, Any]:
-        self.step_count += 1
-        step_logs = [f"--- Timestep {self.step_count} ---"]
+            age = random.gauss(30, 15)
+            age = max(18, min(60, age))
 
-        # 1. Step Events
-        event_logs = self.events.step_events(self.step_count)
-        step_logs.extend(event_logs)
+            agent = Agent(
+                x=x, y=y,
+                world=self.world,
+                age=age,
+                is_child=False,
+            )
 
-        # 2. Agent Survival & Fatigue Consumption
-        health_drain = self.events.get_multiplier("health_drain")
-        for aid, agent in list(self.agents.items()):
-            if agent.is_alive:
-                # Apply event disease health drain if active
-                if health_drain > 1.0:
-                    agent.health = max(0.0, agent.health - health_drain * 3.0)
-                    
-                died, reason = agent.consume_resources()
-                if died:
-                    step_logs.append(f"💀 {agent.name} (#{agent.id}, {agent.role}) has died: {reason}.")
+            # Initialize some starting trust between nearby agents
+            nearby = self.world.get_agents_in_radius(x, y, 5)
+            for aid in nearby:
+                if aid != agent.id:
+                    agent.trust_scores[aid] = random.gauss(0.3, 0.2)
 
-        # 3. Pathfinding / Movement Phase
-        for aid, agent in self.agents.items():
-            if not agent.is_alive:
-                continue
-            
-            # Decides target
-            if agent.energy < 35.0:
-                # Go sleep in nearest town or stay put
-                tx, ty = self.map.find_nearest_tile_type(agent.x, agent.y, "Town")
-                agent.target_x, agent.target_y = tx, ty
-            elif agent.role == "Farmer":
-                tx, ty = self.map.find_nearest_tile_type(agent.x, agent.y, "Farm")
-                agent.target_x, agent.target_y = tx, ty
-            elif agent.role == "Miner":
-                tx, ty = self.map.find_nearest_tile_type(agent.x, agent.y, "Mine")
-                agent.target_x, agent.target_y = tx, ty
-            else:
-                # Seek Town centers
-                tx, ty = self.map.find_nearest_tile_type(agent.x, agent.y, "Town")
-                agent.target_x, agent.target_y = tx, ty
-                
-            agent.move_towards_target()
+    def step(self) -> Dict:
+        """Execute one simulation timestep"""
+        self.world.timestep += 1
 
-        # 4. Decisions, Work & Emergent Crime
-        all_orders = []
-        for aid, agent in self.agents.items():
-            if not agent.is_alive:
-                continue
-                
-            orders, crime = agent.make_decisions(self.economy.average_prices, self.step_count)
-            all_orders.extend(orders)
+        # Reset per-step counters
+        self.world._births_this_step = 0
+        self.world._deaths_this_step = 0
+        self.world._crimes_this_step = 0
+        self.world._trades_this_step = 0
 
-            # Crime execution (Theft)
-            if crime and crime["type"] == "theft":
-                self._execute_theft(agent, step_logs)
+        logs = []
+        new_agents = []
 
-        # 5. Economic Trade Matching
-        for order in all_orders:
-            self.economy.submit_order(MarketOrder(
-                agent_id=order["agent_id"],
-                order_type=order["type"],
-                item=order["item"],
-                amount=order["amount"],
-                price=order["price"]
-            ))
+        # 1. Government actions (taxes, welfare, policy)
+        gov_logs = self.government.step()
+        logs.extend(gov_logs)
 
-        # Match trades across all goods
-        matched_trades = []
-        for item in self.economy.average_prices:
-            trades = self.economy.match_item_market(item, self.agents, self.step_count)
-            matched_trades.extend(trades)
+        # 2. Agent decisions and actions
+        alive_agents = [a for a in self.world.agents.values() if a.alive]
 
-        # Limit transaction logging to notable trades
-        for t in matched_trades[:12]:
-            step_logs.append(f"🤝 {self.agents[t['buyer_id']].name} bought {t['amount']:.1f} {t['item']} from {self.agents[t['seller_id']].name} for ${t['total']:.2f}")
+        # Shuffle to prevent ordering bias
+        random.shuffle(alive_agents)
 
-        # 6. Government Policy
-        govt_logs = self.government.run_fiscal_cycle(self.agents, self.step_count)
-        step_logs.extend(govt_logs)
+        for agent in alive_agents:
+            # Perception
+            perception = agent.perceive()
 
-        # 7. Demographics (Marriages & Childbirth)
-        self._process_demographics(step_logs)
+            # Cognition
+            action, params = agent.decide(perception)
 
-        # 8. Starvation memory alerts
-        for aid, agent in self.agents.items():
-            if agent.is_alive and agent.starvation_ticks == 1:
-                self._record_memory(agent.id, agent.name, "I am starving because I have no food left! I must acquire food quickly.", 7)
+            # Action
+            action_logs = agent.act(action, params)
+            logs.extend(action_logs)
 
-        # 9. Record History Stats
-        stats = self._compile_stats()
+            # Metabolism and aging
+            agent.update_metabolism()
 
-        # 10. LangGraph Government Council integration
-        if self.step_count % 10 == 0:
-            try:
-                from simunation.agent_mind import run_government_council
-                council_res = run_government_council({"stats": stats, "government": self.government.to_dict()}, step_logs)
-                if council_res["policy"]:
-                    p = council_res["policy"]
-                    if "tax_rate" in p:
-                        self.government.tax_rate = p["tax_rate"]
-                    if "welfare_amount" in p:
-                        self.government.welfare_amount = p["welfare_amount"]
-                    step_logs.append(f"🏛️ Council: Adjusted policy - Tax: {self.government.tax_rate*100:.1f}%, Welfare: ${self.government.welfare_amount:.1f}. Analysis: {council_res['analysis']}")
-                
-                if council_res["event"]:
-                    from simunation.events import WorldEvent
-                    evt_name = council_res["event"]
-                    events_config = {
-                        "Drought": {"duration": 8, "description": "Council detected starvation crisis. Severe Drought initiated.", "modifiers": {"food_production": 0.4, "happiness": 0.85}},
-                        "Economic Boom": {"duration": 10, "description": "Council detected low inequality. Initiated economic stimulus.", "modifiers": {"wage_multiplier": 1.5, "happiness": 1.25}}
-                    }
-                    if evt_name in events_config:
-                        cfg = events_config[evt_name]
-                        evt = WorldEvent(evt_name, cfg["duration"], cfg["description"], cfg["modifiers"])
-                        self.events.active_events.append(evt)
-                        step_logs.append(f"📢 Council Event: {evt_name} has been triggered by the Council!")
-                # Compile stats again to capture policy update
-                stats = self._compile_stats()
-            except Exception as e:
-                print(f"Error executing council agent: {e}")
+            # Reproduction
+            if not agent.is_child and agent.alive and agent.partner_id:
+                child = agent.reproduce()
+                if child:
+                    new_agents.append(child)
+                    self.family_system.add_child_to_household(child.id, agent.id)
+                    logs.append(f"BIRTH: Agent {child.id} born to Agent {agent.id} and Agent {agent.partner_id}")
+
+        # 3. Social dynamics
+        social_logs = self.social_engine.step()
+        logs.extend(social_logs)
+
+        # 4. Family dynamics
+        family_logs = self.family_system.step()
+        logs.extend(family_logs)
+
+        # 5. Infrastructure and vehicles update
+        self.infrastructure.update_vehicles()
+        for agent in alive_agents:
+            if agent.profession.name in ('TRADER', 'MERCHANT') and random.random() < 0.1:
+                start = (agent.x, agent.y)
+                destinations = list(self.infrastructure.settlement_centers.values())
+                if destinations:
+                    end = random.choice(destinations)
+                    self.infrastructure.spawn_vehicle(start, end, "truck" if random.random() < 0.3 else "car")
+
+        # 6. Market update
+        self.world.update_market_prices()
+
+        # 6. Add new agents to world
+        for child in new_agents:
+            self.world.agents[child.id] = child
+
+        # Compile stats
+        stats = self.world.get_stats()
+
+        # Add government state to stats
+        stats["government"] = self.government.to_dict()
 
         self.history.append(stats)
         if len(self.history) > 200:
             self.history.pop(0)
 
-        self.logs.extend(step_logs)
+        self.logs.extend(logs)
         if len(self.logs) > 600:
             self.logs = self.logs[-600:]
 
         return {
+            "timestep": self.world.timestep,
             "stats": stats,
-            "logs": step_logs,
-            "trades": matched_trades
+            "logs": logs,
+            "agents": [a.to_dict() for a in self.world.agents.values() if a.alive],
+            "world": self.world.to_dict(),
         }
 
-    def _record_memory(self, agent_id: int, agent_name: str, text: str, importance: int):
-        try:
-            from simunation.database import add_agent_memory
-            from simunation.agent_mind import get_embedding
-            emb = get_embedding(text)
-            add_agent_memory(agent_id, agent_name, self.step_count, text, importance, emb)
-        except Exception as e:
-            print(f"Error recording memory: {e}")
+    def run(self, steps: int) -> List[Dict]:
+        """Run multiple steps and return history"""
+        history = []
+        for _ in range(steps):
+            result = self.step()
+            history.append(result)
+        return history
 
-    def _execute_theft(self, thief: AdvancedAgent, step_logs: List[str]):
-        """Executes a theft from a random wealthy neighbor on the same or adjacent tile."""
-        neighbors = [
-            a for a in self.agents.values() 
-            if a.is_alive and a.id != thief.id and abs(a.x - thief.x) <= 3 and abs(a.y - thief.y) <= 3
-        ]
-        
-        if neighbors:
-            victim = max(neighbors, key=lambda x: x.money + x.food * 10)
-            
-            # Steal money and food
-            stolen_money = round(victim.money * random.uniform(0.1, 0.3), 2)
-            stolen_food = round(victim.food * random.uniform(0.1, 0.4), 2)
-            
-            victim.money -= stolen_money
-            victim.food -= stolen_food
-            victim.inventory["food"] = victim.food
-            
-            thief.money += stolen_money
-            thief.food += stolen_food
-            thief.inventory["food"] = thief.food
-            
-            self.total_thefts += 1
-            
-            # Betrayal destroys trust
-            victim.relationships.modify_trust(thief.id, -60.0, f"Stole ${stolen_money} from me!", self.step_count)
-            step_logs.append(f"⚠️ Crime: {thief.name} (#{thief.id}) robbed {victim.name} (#{victim.id}), stealing ${stolen_money:.1f} and {stolen_food:.1f} food.")
-            
-            # Record memories
-            self._record_memory(thief.id, thief.name, f"I was starving and had to rob my neighbor {victim.name}, stealing ${stolen_money} and {stolen_food} food.", 8)
-            self._record_memory(victim.id, victim.name, f"I was robbed by {thief.name}! They stole ${stolen_money} and {stolen_food} food from me. I do not trust them anymore.", 9)
-        else:
-            thief.last_action = "Failed theft (no targets nearby)"
+    def apply_scenario(self, scenario_type: str, params: Dict) -> List[str]:
+        """Apply external scenario/policy change"""
+        logs = []
 
-    def _process_demographics(self, step_logs: List[str]):
-        """Handles marriage proposals and childbirth of living couples."""
-        # Find single adults
-        singles = [a for a in self.agents.values() if a.is_alive and a.age >= 18 and a.partner_id is None]
-        
-        # Limit marriages per step to prevent population explosion
-        random.shuffle(singles)
-        marriages = 0
-        
-        for i in range(len(singles)):
-            a1 = singles[i]
-            if a1.partner_id is not None or a1.money < 60.0:
-                continue
-                
-            for j in range(i + 1, len(singles)):
-                a2 = singles[j]
-                if a2.partner_id is not None or a2.money < 60.0:
-                    continue
-                
-                # Check grid distance
-                if abs(a1.x - a2.x) <= 4 and abs(a1.y - a2.y) <= 4:
-                    # Marry
-                    a1.partner_id = a2.id
-                    a2.partner_id = a1.id
-                    
-                    # Create family unit
-                    family = self.families.create_family([a1.id, a2.id], a1.x, a1.y)
-                    a1.family_id = family.id
-                    a2.family_id = family.id
-                    
-                    marriages += 1
-                    step_logs.append(f"❤️ Marriage: {a1.name} and {a2.name} formed a partnership and started a family.")
-                    
-                    # Record memories
-                    self._record_memory(a1.id, a1.name, f"I married my partner {a2.name} and we started our new family together.", 6)
-                    self._record_memory(a2.id, a2.name, f"I married my partner {a1.name} and we started our new family together.", 6)
-                    break
-            if marriages >= 2:
-                break
+        if scenario_type == "famine":
+            intensity = params.get("intensity", 0.5)
+            for row in self.world.grid:
+                for tile in row:
+                    if tile.tile_type == TileType.FARM:
+                        tile.resources["food"] *= (1 - intensity)
+            logs.append(f"SCENARIO: Famine reduces farm output by {intensity:.0%}")
 
-        # Childbirth chance for couples
-        living_population = len([a for a in self.agents.values() if a.is_alive])
-        if living_population >= config.max_population:
-            return
+        elif scenario_type == "gold_rush":
+            for row in self.world.grid:
+                for tile in row:
+                    if tile.tile_type == TileType.MINE:
+                        tile.resources["minerals"] *= 2.0
+                        tile.resources["raw_materials"] *= 1.5
+            logs.append("SCENARIO: Gold rush! Mineral deposits doubled.")
 
-        for a in list(self.agents.values()):
-            if a.is_alive and a.partner_id is not None and a.family_id is not None:
-                # Prevent double triggers (only trigger on one partner)
-                if a.id < a.partner_id:
-                    partner = self.agents[a.partner_id]
-                    if partner.is_alive and a.money > 80.0 and len(a.children_ids) < 3:
-                        # 4% chance per step
-                        if random.random() < 0.04:
-                            # Birth cost
-                            a.money -= config.birth_cost_money / 2
-                            partner.money -= config.birth_cost_money / 2
-                            
-                            # Spawn Child agent
-                            child_id = self.next_agent_id
-                            self.next_agent_id += 1
-                            
-                            child = AdvancedAgent(agent_id=child_id, role="Child", x=a.x, y=a.y)
-                            child.age = 0
-                            child.money = 0.0
-                            child.food = 5.0
-                            child.family_id = a.family_id
-                            
-                            self.agents[child_id] = child
-                            
-                            a.children_ids.append(child_id)
-                            partner.children_ids.append(child_id)
-                            
-                            # Add member to family object
-                            fam = self.families.families[a.family_id]
-                            fam.add_member(child_id)
-                            
-                            step_logs.append(f"👶 Birth: A new child, {child.name}, was born to {a.name} and {partner.name}.")
-                            
-                            # Record memories
-                            self._record_memory(a.id, a.name, f"Our new child, {child.name}, was born! I am so happy to expand our family.", 8)
-                            self._record_memory(partner.id, partner.name, f"Our new child, {child.name}, was born! I am so happy to expand our family.", 8)
+        elif scenario_type == "plague":
+            mortality = params.get("mortality", 0.1)
+            alive = [a for a in self.world.agents.values() if a.alive]
+            victims = random.sample(alive, int(len(alive) * mortality))
+            for victim in victims:
+                victim.health = 0
+                victim.alive = False
+            logs.append(f"SCENARIO: Plague killed {len(victims)} agents")
 
-    def _compile_stats(self) -> Dict[str, Any]:
-        living = [a for a in self.agents.values() if a.is_alive]
-        dead_count = sum(1 for a in self.agents.values() if not a.is_alive)
-        starving_count = sum(1 for a in living if a.starvation_ticks > 0)
-        
-        age_dist = AnalyticsManager.get_age_distribution(living)
-        role_stats = AnalyticsManager.get_role_analytics(living)
-        gini = AnalyticsManager.calculate_gini(living)
-        
-        tot_money = sum(a.money for a in living) + self.government.treasury
-        tot_food = sum(a.food for a in living)
-        
-        active_event_names = [e.name for e in self.events.active_events]
+        elif scenario_type == "tax_reform":
+            self.government.policy.tax_rate = params.get("tax_rate", 0.15)
+            logs.append(f"SCENARIO: Tax rate changed to {self.government.policy.tax_rate:.0%}")
+
+        elif scenario_type == "ubi":
+            amount = params.get("amount", 10.0)
+            for agent in self.world.agents.values():
+                if agent.alive and not agent.is_child:
+                    agent.money += amount
+                    self.government.treasury -= amount
+            logs.append(f"SCENARIO: UBI of ${amount} distributed to all citizens")
+
+        elif scenario_type == "migration_wave":
+            count = params.get("count", 10)
+            for _ in range(count):
+                x = random.randint(0, self.world.width - 1)
+                y = random.randint(0, self.world.height - 1)
+                agent = Agent(x=x, y=y, world=self.world, age=random.randint(20, 40), is_child=False)
+                agent.money = 30
+            logs.append(f"SCENARIO: Migration wave of {count} new agents")
+
+        return logs
+
+    def get_agent_diary(self, agent_id: int) -> Dict:
+        """Generate narrative from agent's memory"""
+        agent = self.world.agents.get(agent_id)
+        if not agent:
+            return {"error": "Agent not found"}
+
+        diary = []
+        for mem in agent.memory:
+            entry = f"Year {mem.timestep // 10}: {mem.event_type}"
+            if mem.emotional_valence > 0.5:
+                entry += " (joyful)"
+            elif mem.emotional_valence < -0.5:
+                entry += " (traumatic)"
+            elif mem.emotional_valence < 0:
+                entry += " (unpleasant)"
+            else:
+                entry += " (neutral)"
+
+            if "partner" in mem.details:
+                entry += f" with Agent {mem.details['partner']}"
+            if "stolen" in mem.details:
+                entry += f" — lost ${mem.details['stolen']:.1f}"
+
+            diary.append(entry)
+
+        summary = f"Agent {agent_id}, a {agent.profession.name}, lived {agent.age:.1f} years."
+        if agent.partner_id:
+            summary += f" Partnered with Agent {agent.partner_id}."
+        summary += f" Had {len(agent.children_ids)} children."
+        if not agent.alive:
+            summary += " Deceased."
 
         return {
-            "timestep": self.step_count,
-            "population_alive": len(living),
-            "population_starving": starving_count,
-            "population_dead": dead_count,
-            "gini_coefficient": gini,
-            "total_money": round(tot_money, 2),
-            "total_food": round(tot_food, 2),
-            "average_food_price": self.economy.get_avg_price("food"),
-            "crime_thefts": self.total_thefts,
-            "age_distribution": age_dist,
-            "role_analytics": role_stats,
-            "government": self.government.to_dict(),
-            "active_events": active_event_names
+            "agent_id": agent_id,
+            "alive": agent.alive,
+            "summary": summary,
+            "diary_entries": diary,
+            "traits": {
+                "greed": round(agent.traits.greed, 2),
+                "cooperation": round(agent.traits.cooperation, 2),
+                "intelligence": round(agent.traits.intelligence, 2),
+                "honor": round(agent.traits.honor, 2),
+            },
+            "final_stats": {
+                "money": round(agent.money, 1),
+                "food": round(agent.food, 1),
+                "health": round(agent.health, 1),
+                "happiness": round(agent.happiness, 1),
+            } if not agent.alive else None,
         }
 
     def reset(self):
-        self.step_count = 0
-        self.economy = AdvancedEconomy()
-        self.government = Government()
-        self.events = EventManager()
-        self.families = FamilyRegistry()
-        self.agents = {}
-        self.logs = ["Civilization reset."]
+        """Reset the simulation state"""
+        self.world = World(width=self.world.width, height=self.world.height)
+        self.infrastructure = InfrastructureManager(self.world)
+        self.government = Government(self.world)
+        self.social_engine = SocialEngine(self.world)
+        self.family_system = FamilySystem(self.world)
         self.history = []
-        self.total_thefts = 0
-        self._initialize_simulation()
+        self.logs = ["Simulation reset."]
+        self._initialize_population(50)
+

@@ -7,7 +7,17 @@ from typing import Dict, Any, List
 from simunation.config import config, SimConfig
 from simunation.simulation import Simulation
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="SimuNation — Emergent AI Civilization Simulator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Global simulation instance
 sim = Simulation()

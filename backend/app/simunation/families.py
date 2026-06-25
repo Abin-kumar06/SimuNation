@@ -1,39 +1,41 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Set, Optional
 
-class Family:
-    def __init__(self, family_id: int, members: List[int], parent_ids: List[int], home_x: int, home_y: int):
-        self.id: int = family_id
-        self.member_ids: List[int] = members
-        self.parent_ids: List[int] = parent_ids
-        self.home_x: int = home_x
-        self.home_y: int = home_y
-        self.shared_savings: float = 0.0
+class FamilySystem:
+    def __init__(self, world: 'World'):
+        self.world = world
+        self.households: Dict[int, Set[int]] = {}
+        self.next_household_id = 1
 
-    def add_member(self, agent_id: int):
-        if agent_id not in self.member_ids:
-            self.member_ids.append(agent_id)
+    def form_household(self, agent1_id: int, agent2_id: int) -> int:
+        hid = self.next_household_id
+        self.next_household_id += 1
+        self.households[hid] = {agent1_id, agent2_id}
+        return hid
 
-    def remove_member(self, agent_id: int):
-        if agent_id in self.member_ids:
-            self.member_ids.remove(agent_id)
+    def add_child_to_household(self, child_id: int, parent_id: int):
+        for hid, members in self.households.items():
+            if parent_id in members:
+                members.add(child_id)
+                return
+        hid = self.form_household(parent_id, child_id)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "member_ids": self.member_ids,
-            "parent_ids": self.parent_ids,
-            "home_x": self.home_x,
-            "home_y": self.home_y,
-            "shared_savings": round(self.shared_savings, 2)
-        }
+    def household_resource_sharing(self):
+        """Share food and money among household members in need"""
+        for hid, members in self.households.items():
+            alive_members = [self.world.agents[aid] for aid in members if aid in self.world.agents and self.world.agents[aid].alive]
+            if not alive_members:
+                continue
 
-class FamilyRegistry:
-    def __init__(self):
-        self.families: Dict[int, Family] = {}
-        self.next_family_id: int = 1
+            total_food = sum(a.food for a in alive_members)
+            avg_food = total_food / len(alive_members)
+            for a in alive_members:
+                a.food = avg_food
 
-    def create_family(self, parent_ids: List[int], home_x: int, home_y: int) -> Family:
-        new_fam = Family(self.next_family_id, parent_ids.copy(), parent_ids, home_x, home_y)
-        self.families[self.next_family_id] = new_fam
-        self.next_family_id += 1
-        return new_fam
+            total_money = sum(a.money for a in alive_members)
+            avg_money = total_money / len(alive_members)
+            for a in alive_members:
+                a.money = avg_money
+
+    def step(self) -> List[str]:
+        self.household_resource_sharing()
+        return []
